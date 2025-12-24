@@ -34,7 +34,7 @@ source "proxmox-iso" "blueteam_router" {
   # ISO – AUTO DOWNLOAD
   # =========================
   iso_url          = "https://dl-cdn.alpinelinux.org/alpine/v3.23/releases/x86_64/alpine-standard-3.23.2-x86_64.iso"
-  iso_checksum     = "sha256:e2250daa46d0160d789da70a22db1f855adc89793b01687c7f8893d72d7934b4"
+  iso_checksum     = "file:https://dl-cdn.alpinelinux.org/alpine/v3.23/releases/aarch64/alpine-standard-3.23.2-aarch64.iso.sha256"
   iso_storage_pool = "hdd-data"
   unmount_iso      = true
 

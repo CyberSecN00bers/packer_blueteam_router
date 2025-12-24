@@ -1,105 +1,139 @@
-variable "proxmox_url" {
-  type        = string
-  description = "Proxmox API URL, e.g. https://pve:8006/api2/json"
+packer {
+  required_plugins {
+    proxmox = {
+      source  = "github.com/hashicorp/proxmox"
+      version = ">= 1.2.0"
+    }
+  }
 }
 
-variable "proxmox_username" {
-  type        = string
-  description = "Proxmox username incl. realm. For token auth: user@realm!tokenid"
+locals {
+  template_name = "${var.template_prefix}-${var.hostname}"
 }
 
-variable "proxmox_token" {
-  type        = string
-  sensitive   = true
-  description = "Proxmox API token secret (NOT the token id)."
+source "proxmox-iso" "blueteam_router" {
+
+  # =========================
+  # Proxmox connection
+  # =========================
+  proxmox_url              = var.proxmox_url
+  insecure_skip_tls_verify = var.proxmox_insecure_skip_tls_verify
+
+  username = var.proxmox_username
+  token    = var.proxmox_token
+  node     = var.proxmox_node
+
+  vm_id   = var.vm_id
+  vm_name = local.template_name
+
+  template_name        = local.template_name
+  template_description = "Alpine BlueTeam Router (FRR + nftables NAT + key-only SSH)"
+  tags = "alpine;router;blueteam;template"
+
+  # =========================
+  # ISO – AUTO DOWNLOAD (NEW STYLE)
+  # =========================
+  boot_iso {
+    type              = "scsi"
+    iso_url           = "https://dl-cdn.alpinelinux.org/alpine/v3.23/releases/x86_64/alpine-standard-3.23.2-x86_64.iso"
+    iso_checksum      = "file:https://dl-cdn.alpinelinux.org/alpine/v3.23/releases/aarch64/alpine-standard-3.23.2-aarch64.iso.sha256"
+    storage_pool      = "hdd-data"
+    unmount           = true
+  }
+
+  # =========================
+  # VM hardware
+  # =========================
+  cores    = var.cpu_cores
+  sockets  = 1
+  cpu_type = "host"
+  memory   = var.memory_mb
+
+  os   = "l26"
+  bios = "seabios"
+
+  #REQUIRED for io_thread
+  scsi_controller = "virtio-scsi-single"
+  qemu_agent      = false
+
+  # =========================
+  # Disk
+  # =========================
+  disks {
+    type         = "scsi"
+    disk_size    = var.disk_size
+    storage_pool = var.disk_storage_pool
+    format       = "qcow2"
+    cache_mode   = "none"
+    io_thread    = true
+    discard      = true
+  }
+
+  # =========================
+  # Network adapters (ORDER MATTERS)
+  # =========================
+  network_adapters {
+    model  = "virtio"
+    bridge = var.wan_bridge
+  }
+
+  network_adapters {
+    model  = "virtio"
+    bridge = var.transit_bridge
+  }
+
+  network_adapters {
+    model  = "virtio"
+    bridge = var.dmz_bridge
+  }
+
+  network_adapters {
+    model  = "virtio"
+    bridge = var.blue_bridge
+  }
+
+  # =========================
+  # Packer HTTP server
+  # =========================
+  http_directory = "http"
+
+  # =========================
+  # Boot & unattended install
+  # =========================
+  boot_wait = "10s"
+
+  boot_command = [
+    "<enter><wait>",
+    "root<enter><wait>",
+
+    "ip link set ${var.live_wan_iface} up<enter>",
+    "ip addr add ${var.wan_ip_cidr} dev ${var.live_wan_iface}<enter>",
+    "ip route add default via ${var.wan_gateway}<enter>",
+    "echo nameserver ${var.dns_server} > /etc/resolv.conf<enter>",
+
+    "wget -O /tmp/answers http://{{ .HTTPIP }}:{{ .HTTPPort }}/${var.answerfile_name}<enter>",
+    "ERASE_DISKS=/dev/vda setup-alpine -e -f /tmp/answers<enter>",
+
+    "<wait5m>",
+    "reboot<enter>"
+  ]
+
+  # =========================
+  # SSH for provisioning
+  # =========================
+  communicator = "ssh"
+  ssh_username = "root"
+  ssh_host     = var.ssh_host
+  ssh_port     = 22
+  ssh_timeout  = "25m"
+
+  ssh_private_key_file = var.ssh_private_key_file
 }
 
-variable "proxmox_node" {
-  type        = string
-  description = "Proxmox node name to build on."
-}
+build {
+  sources = ["source.proxmox-iso.blueteam_router"]
 
-variable "proxmox_insecure_skip_tls_verify" {
-  type        = bool
-  default     = true
-  description = "Skip TLS verify for Proxmox API."
-}
-
-variable "vm_id" {
-  type        = number
-  default     = 0
-  description = "Optional fixed VMID. Set 0 to auto-assign."
-}
-
-variable "template_prefix" {
-  type        = string
-  default     = "tpl"
-}
-
-variable "hostname" {
-  type        = string
-  default     = "alpine-blue-router"
-}
-
-variable "disk_storage_pool" {
-  type        = string
-  default     = "local-lvm"
-}
-
-variable "disk_size" {
-  type        = string
-  default     = "8G"
-}
-
-variable "cpu_cores" {
-  type        = number
-  default     = 2
-}
-
-variable "memory_mb" {
-  type        = number
-  default     = 512
-}
-
-variable "wan_bridge"     { type = string }
-variable "transit_bridge" { type = string }
-variable "dmz_bridge"     { type = string }
-variable "blue_bridge"    { type = string }
-
-# Live ISO bootstrapping (to fetch answerfile)
-variable "live_wan_iface" {
-  type        = string
-  default     = "eth0"
-  description = "Interface name in the live ISO environment (usually eth0)."
-}
-
-variable "wan_ip_cidr" {
-  type        = string
-  description = "WAN IP/CIDR for the Blue router (also used during live ISO bootstrap), e.g. 10.10.100.2/24"
-}
-
-variable "wan_gateway" {
-  type        = string
-  description = "WAN gateway, e.g. 10.10.100.1"
-}
-
-variable "dns_server" {
-  type        = string
-  default     = "1.1.1.1"
-}
-
-variable "ssh_host" {
-  type        = string
-  description = "IP that Packer will SSH to after install (usually same as WAN IP without /mask), e.g. 10.10.100.2"
-}
-
-variable "ssh_private_key_file" {
-  type        = string
-  description = "Private key path that matches ROOTSSHKEY in http/answers (e.g. ~/.ssh/id_ed25519)."
-}
-
-variable "answerfile_name" {
-  type        = string
-  default     = "answers"
-  description = "Filename inside http/ used as setup-alpine answerfile."
+  provisioner "shell" {
+    script = "scripts/provision-blue.sh"
+  }
 }
