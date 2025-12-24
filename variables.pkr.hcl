@@ -41,17 +41,6 @@ variable "hostname" {
   default     = "alpine-blue-router"
 }
 
-variable "iso_file" {
-  type        = string
-  description = "Proxmox ISO path, e.g. local:iso/alpine-standard-3.20.3-x86_64.iso"
-}
-
-variable "iso_checksum" {
-  type        = string
-  default     = ""
-  description = "Optional checksum, e.g. sha256:.... Leave empty to skip."
-}
-
 variable "disk_storage_pool" {
   type        = string
   default     = "local-lvm"
