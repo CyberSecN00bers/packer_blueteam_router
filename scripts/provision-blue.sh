@@ -59,6 +59,70 @@ rc-update add networking default || true
 # (Optional) Nếu muốn chắc chắn eth0 đang UP ngay lúc này, chỉ up link, không restart:
 ip link set eth0 up 2>/dev/null || true
 
+# ==========================================================
+# [THÊM] Cấu hình IP cho các card mạng (đuôi .5) + persist
+# - Không đụng runtime config của eth0 (tránh rớt SSH)
+# - Chỉ set runtime + ghi vào /etc/network/interfaces cho eth1/2/3
+# ==========================================================
+echo "[+] Configure IP for eth1/eth2/eth3 (tail .5) without restarting networking..."
+
+# 1) Set runtime IP (an toàn: không ảnh hưởng session SSH qua eth0)
+ip link set eth1 up 2>/dev/null || true
+ip link set eth2 up 2>/dev/null || true
+ip link set eth3 up 2>/dev/null || true
+
+# Transit
+ip addr replace 10.10.101.5/30 dev eth1 2>/dev/null || true
+# DMZ
+ip addr replace 172.16.50.5/24 dev eth2 2>/dev/null || true
+# Blue LAN
+ip addr replace 10.10.172.5/24 dev eth3 2>/dev/null || true
+
+# 2) Persist vào /etc/network/interfaces (rewrite phần eth1/eth2/eth3 cho sạch)
+IF_FILE="/etc/network/interfaces"
+if [ -f "$IF_FILE" ]; then
+  awk '
+    function is_target(i) { return (i=="eth1" || i=="eth2" || i=="eth3") }
+    BEGIN { skip=0 }
+    /^auto[ \t]+/ {
+      i=$2
+      if (is_target(i)) { skip=1; next }
+      if (skip && !is_target(i)) { skip=0; print }
+      else if (!skip) { print }
+      next
+    }
+    /^iface[ \t]+/ {
+      i=$2
+      if (is_target(i)) { skip=1; next }
+      if (skip && !is_target(i)) { skip=0; print }
+      else if (!skip) { print }
+      next
+    }
+    { if (!skip) print }
+  ' "$IF_FILE" > /tmp/interfaces.new
+
+  cat >> /tmp/interfaces.new <<'EOF'
+
+# --- Added by provision-blue.sh ---
+auto eth1
+iface eth1 inet static
+    address 10.10.101.5
+    netmask 255.255.255.252
+
+auto eth2
+iface eth2 inet static
+    address 172.16.50.5
+    netmask 255.255.255.0
+
+auto eth3
+iface eth3 inet static
+    address 10.10.172.5
+    netmask 255.255.255.0
+EOF
+
+  mv /tmp/interfaces.new "$IF_FILE"
+fi
+
 # ---- IPv4 forwarding ----
 echo "[+] Enable IPv4 forwarding..."
 mkdir -p /etc/sysctl.d
@@ -133,12 +197,9 @@ frr defaults traditional
 hostname blue-router
 service integrated-vtysh-config
 !
-interface eth1
- ip ospf area 0
-!
 router ospf
- network 10.10.101.0/30 area 0
- network 172.16.50.0/24 area 0
+ ospf router-id 10.10.100.21
+ network 10.10.101.4/30 area 0
  network 10.10.172.0/24 area 0
 !
 line vty
