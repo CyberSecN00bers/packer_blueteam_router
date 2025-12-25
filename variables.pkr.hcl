@@ -1,3 +1,15 @@
+variable "template_prefix" {
+  type        = string
+  default     = "tpl"
+  description = "Prefix tên template"
+}
+
+variable "hostname" {
+  type        = string
+  default     = "blue-router"
+  description = "Hostname (cũng dùng để ghép tên template)"
+}
+
 variable "proxmox_url" {
   type        = string
   description = "Proxmox API URL, e.g. https://pve:8006/api2/json"
