@@ -223,6 +223,16 @@ rc-service frr start > /dev/null 2>&1 || true
 
 rc-update add cloud-init default || true
 
+# Chỉ dùng datasource NoCloud (cloud-init drive của Proxmox), không probe EC2
+mkdir -p /etc/cloud/cloud.cfg.d
+cat > /etc/cloud/cloud.cfg.d/99-proxmox.cfg <<'EOF'
+datasource_list: [ NoCloud, None ]
+
+datasource:
+  NoCloud:
+    fs_label: cidata
+EOF
+
 # --- FIX QUAN TRỌNG CHO ALPINE ---
 # QEMU Agent gọi lệnh 'shutdown' nhưng Alpine chỉ có 'poweroff'.
 if [ ! -f /sbin/shutdown ]; then
