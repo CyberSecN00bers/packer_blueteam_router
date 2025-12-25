@@ -12,6 +12,7 @@ apk add --no-cache \
   acpid \
   cloud-init \
   cloud-init-openrc \
+  busybox-extras
 
 # ---- SSH: harden nhưng KHÔNG restart networking, hạn chế restart sshd ----
 echo "[+] Ensure sshd runtime dir exists..."
@@ -208,6 +209,7 @@ router ospf
 line vty
 !
 EOF
+rc-update add networking default || true
 
 chown -R frr:frr /etc/frr || true
 chmod 640 /etc/frr/frr.conf || true
