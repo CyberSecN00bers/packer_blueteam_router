@@ -8,7 +8,10 @@ apk add --no-cache \
   nftables \
   frr frr-openrc \
   iproute2 \
-  curl
+  curl \
+  acpid \
+  cloud-init \
+  cloud-init-openrc \
 
 # ---- SSH: harden nhưng KHÔNG restart networking, hạn chế restart sshd ----
 echo "[+] Ensure sshd runtime dir exists..."
@@ -198,7 +201,7 @@ hostname blue-router
 service integrated-vtysh-config
 !
 router ospf
- ospf router-id 10.10.100.21
+ ospf router-id 10.10.100.1
  network 10.10.101.0/30 area 0
  network 10.10.172.0/24 area 0
 !
@@ -209,7 +212,27 @@ EOF
 chown -R frr:frr /etc/frr || true
 chmod 640 /etc/frr/frr.conf || true
 
+echo "[+] Enable ACPI for graceful shutdown..."
+rc-update add acpid default
+# rc-service acpid start
+rc-service acpid start > /dev/null 2>&1 || true
+
 rc-update add frr default || true
+# rc-service frr start || true
 rc-service frr start > /dev/null 2>&1 || true
 
+rc-update add cloud-init default || true
+
+# --- FIX QUAN TRỌNG CHO ALPINE ---
+# QEMU Agent gọi lệnh 'shutdown' nhưng Alpine chỉ có 'poweroff'.
+if [ ! -f /sbin/shutdown ]; then
+  ln -s /sbin/poweroff /sbin/shutdown
+fi
+
+echo "[+] Restarting QEMU Agent..."
+rc-service qemu-guest-agent restart > /dev/null 2>&1 || true
+
+
 echo "[+] Done."
+
+# poweroff

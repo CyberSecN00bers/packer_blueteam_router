@@ -1,5 +1,3 @@
-# Blue router answerfile
-
 KEYMAPOPTS="us us"
 HOSTNAMEOPTS="-n blue-router"
 DEVDOPTS=mdev
@@ -8,10 +6,7 @@ INTERFACESOPTS="auto lo
 iface lo inet loopback
 
 auto eth0
-iface eth0 inet static
-    address 10.10.100.21
-    netmask 255.255.255.0
-    gateway 10.10.100.1
+iface eth0 inet dhcp
     hostname blue-router
 
 auto eth1
@@ -28,14 +23,11 @@ DNSOPTS="1.1.1.1"
 TIMEZONEOPTS="-z UTC"
 PROXYOPTS=none
 APKREPOSOPTS="-1 -c"
-USEROPTS="-a -u blue"
-USERSSHKEY="ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIIC5JU9neFzrsWZKMtEJ1lTcWLvhvKqQUd80/Nla7oqT blue-router"
-
 SSHDOPTS=openssh
+
 ROOTSSHKEY="ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIIC5JU9neFzrsWZKMtEJ1lTcWLvhvKqQUd80/Nla7oqT blue-router"
 
 DISKOPTS="-m sys /dev/sda"
-
 NTPOPTS=none
 LBUOPTS=none
 APKCACHEOPTS=none

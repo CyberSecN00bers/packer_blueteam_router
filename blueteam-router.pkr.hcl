@@ -17,10 +17,9 @@ source "proxmox-iso" "blueteam_router" {
   # =========================
   proxmox_url              = var.proxmox_url
   insecure_skip_tls_verify = var.proxmox_insecure_skip_tls_verify
-
-  username = var.proxmox_username
-  token    = var.proxmox_token
-  node     = var.proxmox_node
+  username                 = var.proxmox_username
+  token                    = var.proxmox_token
+  node                     = var.proxmox_node
 
   vm_id   = var.vm_id
   vm_name = local.template_name
@@ -30,35 +29,33 @@ source "proxmox-iso" "blueteam_router" {
   tags                 = "alpine;router;blueteam;template"
 
   # =========================
-  # Boot ISO (NO deprecated iso_* fields)
+  # Boot ISO (download từ public source)
   # =========================
   boot_iso {
     type             = "scsi"
-    iso_url          = "https://dl-cdn.alpinelinux.org/alpine/v3.23/releases/x86_64/alpine-standard-3.23.2-x86_64.iso"
-    iso_checksum     = "sha256:1b8be1ce264bf50048f2c93d8b4e72dd0f791340090aaed022b366b9a80e3518"
-    iso_storage_pool = "hdd-data"
+    iso_url          = "https://dl-cdn.alpinelinux.org/alpine/v3.23/releases/x86_64/alpine-virt-3.23.2-x86_64.iso"
+    iso_checksum     = "file:https://dl-cdn.alpinelinux.org/alpine/v3.23/releases/x86_64/alpine-virt-3.23.2-x86_64.iso.sha256"
+    iso_storage_pool = var.iso_storage_pool
 
-
+    # Cho PVE tự download ISO (đỡ upload/broken pipe)
     iso_download_pve = true
-
-  
-    unmount = true
+    unmount          = true
   }
 
   # =========================
   # VM hardware
   # =========================
-  cores    = var.cpu_cores
-  sockets  = 1
-  cpu_type = "host"
-  memory   = var.memory_mb
+  cores           = var.cpu_cores
+  sockets         = 1
+  cpu_type        = "host"
+  memory          = var.memory_mb
+  os              = "l26"
+  bios            = "seabios"
+  scsi_controller = "virtio-scsi-single"
+  qemu_agent      = true
 
-  os   = "l26"
-  bios = "seabios"
-
-  # Fix iothread requirement
-  scsi_controller = "virtio-scsi-single" # required if io_thread=true :contentReference[oaicite:2]{index=2}
-  qemu_agent      = false              
+  # Packer lấy IP từ NIC nào (DHCP)
+  vm_interface = "eth0"
 
   # =========================
   # Disk
@@ -67,13 +64,10 @@ source "proxmox-iso" "blueteam_router" {
     type         = "scsi"
     disk_size    = var.disk_size
     storage_pool = var.disk_storage_pool
-
-    # [Suy luận] Nếu pool của bạn là LVM-thin thì format raw hợp lý hơn qcow2.
-    format     = "raw"
-    cache_mode = "none"
-
-    io_thread = true   # requires virtio-scsi-single :contentReference[oaicite:3]{index=3}
-    discard   = true
+    format       = "raw"
+    cache_mode   = "none"
+    io_thread    = true
+    discard      = true
   }
 
   # =========================
@@ -83,20 +77,17 @@ source "proxmox-iso" "blueteam_router" {
     model  = "virtio"
     bridge = var.wan_bridge
   }
-
   network_adapters {
     model  = "virtio"
-    bridge = var.transit_bridge
+    bridge = "transit"
   }
-
   network_adapters {
     model  = "virtio"
-    bridge = var.dmz_bridge
+    bridge = "dmz"
   }
-
   network_adapters {
     model  = "virtio"
-    bridge = var.blue_bridge
+    bridge = "blue"
   }
 
   # =========================
@@ -105,7 +96,7 @@ source "proxmox-iso" "blueteam_router" {
   http_directory = "http"
 
   # =========================
-  # Boot & unattended install
+  # Boot & unattended install (WAN DHCP)
   # =========================
   boot_wait = "10s"
 
@@ -113,34 +104,33 @@ source "proxmox-iso" "blueteam_router" {
     "<enter><wait>",
     "root<enter><wait>",
 
-    # Bring up WAN in live ISO to fetch answerfile
-    "ip link set ${var.live_wan_iface} up<enter>",
-    "ip addr add ${var.wan_ip_cidr} dev ${var.live_wan_iface}<enter>",
-    "ip route add default via ${var.wan_gateway}<enter>",
+    "ip link set eth0 up<enter>",
+    "udhcpc -i eth0<enter>",
+
+    # nếu DHCP chưa set resolv.conf kịp thì ép tạm DNS để wget answerfile
     "echo nameserver ${var.dns_server} > /etc/resolv.conf<enter>",
 
-    # Fetch answerfile from Packer HTTP server
-    "wget -O /tmp/answers http://{{ .HTTPIP }}:{{ .HTTPPort }}/${var.answerfile_name}<enter>",
+    "wget -O /tmp/answers http://{{ .HTTPIP }}:{{ .HTTPPort }}/answers<enter>",
 
-    # Non-interactive Alpine install
-    # [Suy luận] Với disk type scsi thường là /dev/sda; nếu máy bạn ra /dev/vda thì đổi lại.
-    "ERASE_DISKS=/dev/sda setup-alpine -e -f /tmp/answers<enter>",
-
-    "<wait5m>",
-    "reboot<enter>"
+    # Cài Alpine + cài qemu-guest-agent vào hệ đã cài để Packer lấy IP qua QGA
+    "ERASE_DISKS=/dev/sda setup-alpine -e -f /tmp/answers && mount /dev/sda3 /mnt && apk add --root /mnt qemu-guest-agent && chroot /mnt rc-update add qemu-guest-agent default && reboot<enter>",
   ]
 
   # =========================
-  # SSH communicator (Packer will SSH after install to run provisioners)
+  # SSH communicator
+  # - KHÔNG set ssh_host vì DHCP + qemu_agent sẽ lấy IP
   # =========================
-  communicator = "ssh"
-  ssh_username = "root"
-  ssh_host     = var.ssh_host
-  ssh_port     = 22
-  ssh_timeout  = "25m"
+  communicator          = "ssh"
+  ssh_username          = "root"
+  ssh_port              = 22
+  ssh_timeout           = "25m"
+  ssh_private_key_file  = pathexpand(var.ssh_private_key_file)
 
-  # Use pathexpand to handle "~"
-  ssh_private_key_file = pathexpand(var.ssh_private_key_file)
+  # =========================
+  # Cloud-init CDROM (rỗng) sau khi convert template
+  # =========================
+  cloud_init              = true
+  cloud_init_storage_pool = var.cloud_init_storage_pool
 }
 
 build {

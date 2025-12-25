@@ -31,10 +31,10 @@ variable "vm_id" {
   description = "Optional fixed VMID. Set 0 to auto-assign."
 }
 
+# VM sizing
 variable "disk_storage_pool" {
   type        = string
-  default     = "local-lvm"
-  description = "Proxmox storage pool for the VM disk."
+  description = "Proxmox storage pool for the VM disk (e.g. local-lvm, hdd-lvm)."
 }
 
 variable "disk_size" {
@@ -51,10 +51,11 @@ variable "cpu_cores" {
 
 variable "memory_mb" {
   type        = number
-  default     = 512
+  default     = 2048
   description = "Memory in MB"
 }
 
+# naming
 variable "template_prefix" {
   type        = string
   default     = "tpl"
@@ -67,56 +68,33 @@ variable "hostname" {
   description = "Hostname (also used in template name)"
 }
 
+# portable options
+variable "iso_storage_pool" {
+  type        = string
+  description = "Proxmox storage pool to store the downloaded ISO (e.g. hdd-data)."
+}
+
 variable "wan_bridge" {
   type        = string
-  description = "Proxmox bridge for WAN (net0)"
+  description = "Proxmox bridge for WAN (net0), often differs by system."
 }
 
-variable "transit_bridge" {
+variable "cloud_init_storage_pool" {
   type        = string
-  description = "Proxmox bridge for transit"
+  default     = "local-lvm"
+  description = "Storage pool to store the Cloud-Init CDROM."
 }
 
-variable "dmz_bridge" {
-  type        = string
-  description = "Proxmox bridge for DMZ"
-}
-
-variable "blue_bridge" {
-  type        = string
-  description = "Proxmox bridge for Blue LAN"
-}
-
-variable "live_wan_iface" {
-  type        = string
-  default     = "eth0"
-  description = "Interface name in the live ISO environment (usually eth0)."
-}
-
-variable "wan_ip_cidr" {
-  type        = string
-  description = "WAN IP/CIDR for the Blue router (also used during live ISO bootstrap), e.g. 10.10.100.21/24"
-}
-
-variable "wan_gateway" {
-  type        = string
-  description = "WAN gateway, e.g. 10.10.100.1"
-}
-
+# live ISO minimal
 variable "dns_server" {
   type        = string
   default     = "1.1.1.1"
-  description = "DNS server used in live ISO to fetch answerfile"
-}
-
-variable "ssh_host" {
-  type        = string
-  description = "IP that Packer will SSH to after install, e.g. 10.10.100.21"
+  description = "DNS used in live ISO to fetch answerfile (DHCP may overwrite later)."
 }
 
 variable "ssh_private_key_file" {
   type        = string
-  description = "Private key path that matches ROOTSSHKEY in http/answers (e.g. /root/.ssh/id_ed25519)."
+  description = "Private key path that matches ROOTSSHKEY in http/answers."
 }
 
 variable "answerfile_name" {
