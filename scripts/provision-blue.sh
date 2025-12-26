@@ -5,11 +5,12 @@ echo "[+] Installing packages..."
 apk update
 apk add --no-cache \
   openssh \
-  nftables \
+  iptables iptables-openrc \
   frr frr-openrc \
   iproute2 \
   curl \
   acpid \
+  qemu-guest-agent \
   cloud-init \
   cloud-init-openrc \
   busybox-extras
@@ -39,13 +40,10 @@ if [ -f "$SSHD_CFG" ]; then
 fi
 
 rc-update add sshd default || true
-
-# IMPORTANT: avoid restart that may drop SSH.
-# Start if not running; if already running then try reload (if supported), otherwise ignore.
 rc-service sshd start || true
 rc-service sshd reload 2>/dev/null || true
 
-# ---- NIC DOWN safety net: local.d (OK) ----
+# ---- NIC DOWN safety net: local.d ----
 echo "[+] Force NIC links UP at boot via local.d..."
 mkdir -p /etc/local.d
 cat > /etc/local.d/ifup.start <<'EOF'
@@ -58,31 +56,27 @@ chmod +x /etc/local.d/ifup.start
 rc-update add local default || true
 
 # DO NOT restart networking while Packer is SSH-ing.
-# Only enable the service so next boot it comes up automatically.
 rc-update add networking default || true
-# (Optional) If you want eth0 UP right now, only bring link up; do NOT restart networking:
 ip link set eth0 up 2>/dev/null || true
 
 # ==========================================================
-# [ADDED] Configure IP for NICs (tail .5) + persist
-# - Do NOT touch eth0 runtime config (avoid dropping SSH)
-# - Only set runtime + write /etc/network/interfaces for eth1/2/3
+# Configure IP for internal NICs + persist
+# - eth0: DHCP (không đụng runtime để khỏi rớt SSH)
+# - eth1: transit 10.10.101.1/30
+# - eth2: DMZ   172.16.50.1/24
+# - eth3: BLUE  10.10.172.1/24
 # ==========================================================
-echo "[+] Configure IP for eth1/eth2/eth3 (tail .5) without restarting networking..."
+echo "[+] Configure IP for eth1/eth2/eth3 without restarting networking..."
 
-# 1) Set runtime IP (safe: does not affect SSH session via eth0)
 ip link set eth1 up 2>/dev/null || true
 ip link set eth2 up 2>/dev/null || true
 ip link set eth3 up 2>/dev/null || true
 
-# Transit
 ip addr replace 10.10.101.1/30 dev eth1 2>/dev/null || true
-# DMZ
 ip addr replace 172.16.50.1/24 dev eth2 2>/dev/null || true
-# Blue LAN
 ip addr replace 10.10.172.1/24 dev eth3 2>/dev/null || true
 
-# 2) Persist into /etc/network/interfaces (rewrite eth1/eth2/eth3 sections cleanly)
+# Persist /etc/network/interfaces (rewrite eth1/eth2/eth3 sections cleanly)
 IF_FILE="/etc/network/interfaces"
 if [ -f "$IF_FILE" ]; then
   awk '
@@ -135,86 +129,76 @@ net.ipv4.ip_forward=1
 EOF
 sysctl -p /etc/sysctl.d/99-router.conf || true
 
-# ---- nftables: start (do NOT restart) to reduce risk of dropping SSH ----
-echo "[+] Configure nftables..."
-cat > /etc/nftables.conf <<'EOF'
-flush ruleset
+# ==========================================================
+# IPTABLES (thay nftables)
+# Logic giống rule bạn/Quang dùng:
+# - INPUT drop, allow lo/established
+# - allow SSH, ICMP, OSPF(89), IGMP(2)
+# - allow internal NICs truy cập router
+# - FORWARD: LAN/DMZ -> WAN, OSPF link <-> LAN/DMZ, (optional) OSPF link -> WAN
+# - NAT: hễ ra eth0 là masquerade
+# ==========================================================
+echo "[+] Configure iptables (policy drop + forward + NAT)..."
 
-# --- ĐỊNH NGHĨA BIẾN ---
-# eth0 là WAN (Internet) - Nơi sẽ thực hiện NAT
-define WAN_IF = "eth0"
+WAN_IF="eth0"
+OSPF_IF="eth1"
+LAN_IFS="eth2 eth3"
 
-# eth1 là OSPF Link - Tuyệt đối không NAT traffic OSPF trên cổng này
-define OSPF_IF = "eth1"
+iptables -F
+iptables -t nat -F
+iptables -t mangle -F
+iptables -X
 
-# Các cổng LAN nội bộ
-define LAN_IFS = { "eth2", "eth3" }
-define ALL_INTERNAL = { "eth1", "eth2", "eth3" }
+iptables -P INPUT DROP
+iptables -P FORWARD DROP
+iptables -P OUTPUT ACCEPT
 
-table inet filter {
-    chain input {
-        type filter hook input priority 0; policy drop;
+# INPUT basics
+iptables -A INPUT -i lo -j ACCEPT
+iptables -A INPUT -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
 
-        # 1. Chấp nhận traffic cơ bản
-        iif "lo" accept
-        ct state established,related accept
+# DHCP client on eth0 (để chắc chắn không bị drop lúc xin lease)
+iptables -A INPUT -i "$WAN_IF" -p udp --sport 67 --dport 68 -j ACCEPT
 
-        # 2. Quản trị (SSH, Ping)
-        tcp dport 22 accept
-        ip protocol icmp accept
+# Mgmt
+iptables -A INPUT -p tcp --dport 22 -j ACCEPT
+iptables -A INPUT -p icmp -j ACCEPT
 
-        # 3. Giao thức định tuyến (OSPF) - BẮT BUỘC
-        # Cho phép router nhận gói tin OSPF từ hàng xóm
-        ip protocol ospf accept
-        ip protocol igmp accept
+# OSPF/IGMP
+iptables -A INPUT -p ospf -j ACCEPT
+iptables -A INPUT -p igmp -j ACCEPT
 
-        # 4. Cho phép mạng nội bộ truy cập router
-        iifname $ALL_INTERNAL accept
-    }
+# allow internal to router
+iptables -A INPUT -i "$OSPF_IF" -j ACCEPT
+iptables -A INPUT -i eth2 -j ACCEPT
+iptables -A INPUT -i eth3 -j ACCEPT
 
-    chain forward {
-        type filter hook forward priority 0; policy drop;
+# FORWARD
+iptables -A FORWARD -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
 
-        ct state established,related accept
+# LAN/DMZ -> WAN
+for IF in $LAN_IFS; do
+  iptables -A FORWARD -i "$IF" -o "$WAN_IF" -j ACCEPT
+done
 
-        # 1. Cho phép LAN ra Internet (qua eth0)
-        iifname $LAN_IFS oifname $WAN_IF accept
+# OSPF link -> WAN (nếu cần)
+iptables -A FORWARD -i "$OSPF_IF" -o "$WAN_IF" -j ACCEPT
 
-        # 2. Cho phép Router OSPF (eth1) ra Internet (nếu cần update/ping)
-        iifname $OSPF_IF oifname $WAN_IF accept
+# OSPF link <-> LAN/DMZ
+for IF in $LAN_IFS; do
+  iptables -A FORWARD -i "$OSPF_IF" -o "$IF" -j ACCEPT
+  iptables -A FORWARD -i "$IF" -o "$OSPF_IF" -j ACCEPT
+done
 
-        # 3. Routing giữa các mạng nội bộ (LAN <-> OSPF Link)
-        iifname $OSPF_IF oifname $LAN_IFS accept
-        iifname $LAN_IFS oifname $OSPF_IF accept
-    }
+# NAT all out WAN
+iptables -t nat -A POSTROUTING -o "$WAN_IF" -j MASQUERADE
 
-    chain output {
-        type filter hook output priority 0; policy accept;
-    }
-}
+# Persist rules
+rc-update add iptables default || true
+rc-service iptables start > /dev/null 2>&1 || true
+rc-service iptables save  > /dev/null 2>&1 || true
 
-table ip nat {
-    chain prerouting {
-        type nat hook prerouting priority -100;
-    }
-
-    chain postrouting {
-        type nat hook postrouting priority 100;
-
-        # --- ĐÂY LÀ DÒNG BẠN YÊU CẦU ---
-        # Tương đương: iptables -t nat -A POSTROUTING -o eth0 -j MASQUERADE
-        # Ý nghĩa: Cứ hễ đi ra cổng WAN (eth0) là NAT hết.
-        oifname $WAN_IF masquerade
-    }
-}
-EOF
-
-rc-update add nftables default || true
-rc-service nftables start || true
-# If start fails because it's already running, try reload (optional)
-rc-service nftables reload 2>/dev/null || true
-
-# ---- FRR: config + start (avoid restart) ----
+# ---- FRR: config + start (BLUE) ----
 echo "[+] Configure FRR..."
 if [ -f /etc/frr/daemons ]; then
   sed -i \
@@ -226,28 +210,31 @@ if [ -f /etc/frr/daemons ]; then
     /etc/frr/daemons || true
 fi
 
+# OSPF:
+# - chỉ chạy hello trên eth1 (transit)
+# - quảng bá transit + BLUE LAN
+# - KHÔNG quảng bá DMZ (eth2)
 cat > /etc/frr/frr.conf <<'EOF'
 frr defaults traditional
-hostname red-router
+hostname blue-router
 service integrated-vtysh-config
 !
 router ospf
- ospf router-id 10.10.101.2
+ ospf router-id 10.10.101.1
  passive-interface default
  no passive-interface eth1
  network 10.10.101.0/30 area 0
- network 10.10.171.0/24 area 0
+ network 10.10.172.0/24 area 0
 !
 line vty
 !
 EOF
-rc-update add networking default || true
 
 chown -R frr:frr /etc/frr || true
 chmod 640 /etc/frr/frr.conf || true
 
 echo "[+] Enable ACPI for graceful shutdown..."
-rc-update add acpid default
+rc-update add acpid default || true
 rc-service acpid start > /dev/null 2>&1 || true
 
 rc-update add frr default || true
@@ -270,22 +257,16 @@ cat > /etc/cloud/cloud.cfg.d/99-disable-network-config.cfg <<'EOF'
 network: {config: disabled}
 EOF
 
-# Clean so clones still run user-data, but do not break network
 cloud-init clean --logs > /dev/null 2>&1 || true
-
-echo "[+] Cleaning cloud-init state/logs..."
-cloud-init clean -l > /dev/null 2>&1 || true
+cloud-init clean -l    > /dev/null 2>&1 || true
 rm -rf /var/lib/cloud/* > /dev/null 2>&1 || true
 
 # --- IMPORTANT FIX FOR ALPINE ---
-# QEMU Agent calls 'shutdown' but Alpine provides 'poweroff' by default.
 if [ ! -f /sbin/shutdown ]; then
   ln -s /sbin/poweroff /sbin/shutdown
 fi
 
-echo "[+] Restarting QEMU Agent..."
+rc-update add qemu-guest-agent default || true
 rc-service qemu-guest-agent restart > /dev/null 2>&1 || true
 
 echo "[+] Done."
-
-# poweroff
