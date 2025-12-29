@@ -64,7 +64,7 @@ ip link set eth0 up 2>/dev/null || true
 
 # ==========================================================
 # Configure IP for internal NICs + persist
-# - eth0: DHCP (vmbr10, "ra mạng ngoài") -> không đụng runtime để khỏi rớt SSH
+# - eth0: DHCP (vmbr10, "external networdk")
 # - eth1: transit 10.10.101.1/30
 # - eth2: DMZ   172.16.50.1/24
 # - eth3: BLUE  10.10.172.1/24
@@ -133,16 +133,20 @@ EOF
 sysctl -p /etc/sysctl.d/99-router.conf > /dev/null 2>&1 || true  # change
 
 # ==========================================================
-# IPTABLES (thay nftables)
+# IPTABLES
 # ==========================================================
 echo "[+] Configure iptables (policy drop + forward + NAT)..."
 
-WAN_IF="eth0"          # vmbr10 (ra mạng ngoài)
-OSPF_IF="eth1"
-LAN_IFS="eth2 eth3"    # DMZ + BLUE
+WAN_IF="eth0"          # vmbr10
+TRANSIT_IF="eth1"      # red<->blue transit
+DMZ_IF="eth2"
+BLUE_IF="eth3"
 
-# DMZ reverse-proxy/nginx-love IP tĩnh (SỬA ĐÚNG IP CỦA BẠN)
-DMZ_WEB_IP="172.16.50.5"
+TRANSIT_IP="10.10.101.1"     # add: IP of eth1 on BLUE router (permanent)
+DMZ_WEB_IP="172.16.50.5"     # add: nginx-love (DMZ) static IP
+
+# add: IP Wazuh Manager in BLUE VNet 
+WAZUH_MGR_IP="10.10.172.10"  # add: đổi theo thực tế
 
 iptables -F
 iptables -t nat -F
@@ -155,63 +159,77 @@ iptables -P OUTPUT ACCEPT
 
 iptables -A INPUT -i lo -j ACCEPT
 iptables -A INPUT -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
+
+# DHCP client on WAN
 iptables -A INPUT -i "$WAN_IF" -p udp --sport 67 --dport 68 -j ACCEPT
 
+# Mgmt basic
 iptables -A INPUT -p tcp --dport 22 -j ACCEPT
 iptables -A INPUT -p icmp -j ACCEPT
+
+# Routing protocols
 iptables -A INPUT -p ospf -j ACCEPT
 iptables -A INPUT -p igmp -j ACCEPT
 
-iptables -A INPUT -i "$OSPF_IF" -j ACCEPT
-iptables -A INPUT -i eth2 -j ACCEPT
-iptables -A INPUT -i eth3 -j ACCEPT
+# Allow router access from internal
+iptables -A INPUT -i "$TRANSIT_IF" -j ACCEPT
+iptables -A INPUT -i "$DMZ_IF" -j ACCEPT
+iptables -A INPUT -i "$BLUE_IF" -j ACCEPT
 
+# Stateful forward
 iptables -A FORWARD -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
 
-# Allow DMZ/Blue -> WAN
-for IF in $LAN_IFS; do
-  iptables -A FORWARD -i "$IF" -o "$WAN_IF" -j ACCEPT
-done
+# Allow DMZ/Blue -> WAN (internet)
+iptables -A FORWARD -i "$DMZ_IF" -o "$WAN_IF" -j ACCEPT
+iptables -A FORWARD -i "$BLUE_IF" -o "$WAN_IF" -j ACCEPT
 
-# Allow transit -> WAN
-iptables -A FORWARD -i "$OSPF_IF" -o "$WAN_IF" -j ACCEPT
+# change: transit <-> BLUE only (không mở transit <-> DMZ đại trà)
+iptables -A FORWARD -i "$TRANSIT_IF" -o "$BLUE_IF" -j ACCEPT
+iptables -A FORWARD -i "$BLUE_IF" -o "$TRANSIT_IF" -j ACCEPT
 
-# Allow transit <-> DMZ/Blue
-for IF in $LAN_IFS; do
-  iptables -A FORWARD -i "$OSPF_IF" -o "$IF" -j ACCEPT
-  iptables -A FORWARD -i "$IF" -o "$OSPF_IF" -j ACCEPT
-done
+# add: BLUE -> DMZ ALLOW (blue manage/scan dmz)
+iptables -A FORWARD -i "$BLUE_IF" -o "$DMZ_IF" -j ACCEPT
+
+# add: DMZ -> BLUE DENY mặc định, chỉ allow Wazuh ports
+# Wazuh agent -> manager: 1514/tcp (events), 1515/tcp (enroll), 514/udp syslog
+iptables -A FORWARD -i "$DMZ_IF" -o "$BLUE_IF" -p tcp -d "$WAZUH_MGR_IP" --dport 1514 -m conntrack --ctstate NEW -j ACCEPT
+iptables -A FORWARD -i "$DMZ_IF" -o "$BLUE_IF" -p tcp -d "$WAZUH_MGR_IP" --dport 1515 -m conntrack --ctstate NEW -j ACCEPT
+iptables -A FORWARD -i "$DMZ_IF" -o "$BLUE_IF" -p udp -d "$WAZUH_MGR_IP" --dport 514  -j ACCEPT
 
 # DHCP replies on internal nets
-for IF in $LAN_IFS; do
-  iptables -A INPUT -i "$IF" -p udp --dport 67 --sport 68 -j ACCEPT
-done
+iptables -A INPUT -i "$DMZ_IF"  -p udp --dport 67 --sport 68 -j ACCEPT
+iptables -A INPUT -i "$BLUE_IF" -p udp --dport 67 --sport 68 -j ACCEPT
 
 # Outbound NAT
 iptables -t nat -A POSTROUTING -o "$WAN_IF" -j MASQUERADE
 
 # ==========================================================
-# DNAT 80/443 từ WAN(eth0/vmbr10) -> DMZ nginx-love (IP tĩnh)
+# DNAT 80/443 WAN -> DMZ nginx-love
 # ==========================================================
-EXT_IF="$WAN_IF"
-DMZ_IF="eth2"
+iptables -t nat -C PREROUTING -i "$WAN_IF" -p tcp --dport 80  -j DNAT --to-destination "$DMZ_WEB_IP:80"  2>/dev/null \
+  || iptables -t nat -A PREROUTING -i "$WAN_IF" -p tcp --dport 80  -j DNAT --to-destination "$DMZ_WEB_IP:80"
+iptables -t nat -C PREROUTING -i "$WAN_IF" -p tcp --dport 443 -j DNAT --to-destination "$DMZ_WEB_IP:443" 2>/dev/null \
+  || iptables -t nat -A PREROUTING -i "$WAN_IF" -p tcp --dport 443 -j DNAT --to-destination "$DMZ_WEB_IP:443"
 
-# DNAT 80 -> DMZ_WEB_IP:80
-iptables -t nat -C PREROUTING -i "$EXT_IF" -p tcp --dport 80  -j DNAT --to-destination "$DMZ_WEB_IP:80"  2>/dev/null \
-  || iptables -t nat -A PREROUTING -i "$EXT_IF" -p tcp --dport 80  -j DNAT --to-destination "$DMZ_WEB_IP:80"
+iptables -C FORWARD -i "$WAN_IF" -o "$DMZ_IF" -p tcp -d "$DMZ_WEB_IP" --dport 80  -m conntrack --ctstate NEW -j ACCEPT 2>/dev/null \
+  || iptables -I FORWARD 2 -i "$WAN_IF" -o "$DMZ_IF" -p tcp -d "$DMZ_WEB_IP" --dport 80  -m conntrack --ctstate NEW -j ACCEPT
+iptables -C FORWARD -i "$WAN_IF" -o "$DMZ_IF" -p tcp -d "$DMZ_WEB_IP" --dport 443 -m conntrack --ctstate NEW -j ACCEPT 2>/dev/null \
+  || iptables -I FORWARD 2 -i "$WAN_IF" -o "$DMZ_IF" -p tcp -d "$DMZ_WEB_IP" --dport 443 -m conntrack --ctstate NEW -j ACCEPT
 
-# DNAT 443 -> DMZ_WEB_IP:443
-iptables -t nat -C PREROUTING -i "$EXT_IF" -p tcp --dport 443 -j DNAT --to-destination "$DMZ_WEB_IP:443" 2>/dev/null \
-  || iptables -t nat -A PREROUTING -i "$EXT_IF" -p tcp --dport 443 -j DNAT --to-destination "$DMZ_WEB_IP:443"
+# ==========================================================
+# add: DNAT 80/443 từ TRANSIT (RED) -> DMZ nginx-love
+# RED network will access with: http(s)://10.10.101.1/ + Host header
+# ==========================================================
+iptables -t nat -C PREROUTING -i "$TRANSIT_IF" -d "$TRANSIT_IP" -p tcp --dport 80  -j DNAT --to-destination "$DMZ_WEB_IP:80"  2>/dev/null \
+  || iptables -t nat -A PREROUTING -i "$TRANSIT_IF" -d "$TRANSIT_IP" -p tcp --dport 80  -j DNAT --to-destination "$DMZ_WEB_IP:80"
+iptables -t nat -C PREROUTING -i "$TRANSIT_IF" -d "$TRANSIT_IP" -p tcp --dport 443 -j DNAT --to-destination "$DMZ_WEB_IP:443" 2>/dev/null \
+  || iptables -t nat -A PREROUTING -i "$TRANSIT_IF" -d "$TRANSIT_IP" -p tcp --dport 443 -j DNAT --to-destination "$DMZ_WEB_IP:443"
 
-# Allow FORWARD NEW chỉ tới đúng máy reverse proxy (DMZ_WEB_IP) port 80/443
-iptables -C FORWARD -i "$EXT_IF" -o "$DMZ_IF" -p tcp -d "$DMZ_WEB_IP" --dport 80  -m conntrack --ctstate NEW -j ACCEPT 2>/dev/null \
-  || iptables -I FORWARD 2 -i "$EXT_IF" -o "$DMZ_IF" -p tcp -d "$DMZ_WEB_IP" --dport 80  -m conntrack --ctstate NEW -j ACCEPT
+iptables -C FORWARD -i "$TRANSIT_IF" -o "$DMZ_IF" -p tcp -d "$DMZ_WEB_IP" --dport 80  -m conntrack --ctstate NEW -j ACCEPT 2>/dev/null \
+  || iptables -I FORWARD 2 -i "$TRANSIT_IF" -o "$DMZ_IF" -p tcp -d "$DMZ_WEB_IP" --dport 80  -m conntrack --ctstate NEW -j ACCEPT
+iptables -C FORWARD -i "$TRANSIT_IF" -o "$DMZ_IF" -p tcp -d "$DMZ_WEB_IP" --dport 443 -m conntrack --ctstate NEW -j ACCEPT 2>/dev/null \
+  || iptables -I FORWARD 2 -i "$TRANSIT_IF" -o "$DMZ_IF" -p tcp -d "$DMZ_WEB_IP" --dport 443 -m conntrack --ctstate NEW -j ACCEPT
 
-iptables -C FORWARD -i "$EXT_IF" -o "$DMZ_IF" -p tcp -d "$DMZ_WEB_IP" --dport 443 -m conntrack --ctstate NEW -j ACCEPT 2>/dev/null \
-  || iptables -I FORWARD 2 -i "$EXT_IF" -o "$DMZ_IF" -p tcp -d "$DMZ_WEB_IP" --dport 443 -m conntrack --ctstate NEW -j ACCEPT
-
-# silence iptables service ops
 rc-update add iptables default > /dev/null 2>&1 || true
 rc-service iptables start > /dev/null 2>&1 || true
 rc-service iptables save > /dev/null 2>&1 || true
@@ -240,7 +258,6 @@ dhcp-option=tag:blue_net,option:dns-server,1.1.1.1
 log-facility=/var/log/dnsmasq.log
 EOF
 
-# silence dnsmasq enable/restart
 rc-update add dnsmasq default > /dev/null 2>&1 || true
 rc-service dnsmasq restart > /dev/null 2>&1 || true
 
