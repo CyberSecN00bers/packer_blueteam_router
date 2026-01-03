@@ -124,7 +124,7 @@ source "proxmox-iso" "blueteam_router" {
   ssh_username          = "root"
   ssh_port              = 22
   ssh_timeout           = "25m"
-  ssh_private_key_file  = pathexpand(var.ssh_private_key_file)
+  ssh_private_key  = var.ssh_private_key
 
   # =========================
   # Cloud-init CDROM (rỗng) sau khi convert template

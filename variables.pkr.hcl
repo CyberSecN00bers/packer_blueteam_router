@@ -91,8 +91,9 @@ variable "dns_server" {
   description = "DNS used in live ISO to fetch answerfile (DHCP may overwrite later)."
 }
 
-variable "ssh_private_key_file" {
+variable "ssh_private_key" {
   type        = string
+  sensitive   = true
   description = "Private key path that matches ROOTSSHKEY in http/answers."
 }
 
