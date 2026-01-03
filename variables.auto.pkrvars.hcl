@@ -19,13 +19,5 @@ wan_bridge              = "vmbr10"
 cloud_init_storage_pool = "local-lvm"
 
 dns_server = "1.1.1.1"
-ssh_private_key = <<EOF
------BEGIN OPENSSH PRIVATE KEY-----
-b3BlbnNzaC1rZXktdjEAAAAABG5vbmUAAAAEbm9uZQAAAAAAAAABAAAAMwAAAAtzc2gtZW
-QyNTUxOQAAACCAuSVPZ3hc67FmSjLRCdZU3Fi74byqkFHfNPzZWu6KkwAAAJAWKGFNFihh
-TQAAAAtzc2gtZWQyNTUxOQAAACCAuSVPZ3hc67FmSjLRCdZU3Fi74byqkFHfNPzZWu6Kkw
-AAAEDhdY7qNIEhh5s8rTotYQeFLaS2N/TLZpoFifWxUezYxIC5JU9neFzrsWZKMtEJ1lTc
-WLvhvKqQUd80/Nla7oqTAAAAC2JsdWUtcm91dGVyAQI=
------END OPENSSH PRIVATE KEY-----
-EOF
+ssh_private_key = "~/.ssh/id_ed25519"
 answerfile_name = "answers"
