@@ -5,7 +5,8 @@ variable "template_prefix" {
 }
 
 variable "pub_key" { 
-  type = string 
+  type = string
+  default     = env("PACKER_SSH_PUBLIC_KEY")
   }
 
 variable "hostname" {
@@ -98,6 +99,7 @@ variable "dns_server" {
 variable "pri_key" {
   type        = string
   description = "Private key path that matches ROOTSSHKEY in http/answers."
+  default     = env("PACKER_SSH_PRIVATE_KEY")
 }
 
 variable "answerfile_name" {
