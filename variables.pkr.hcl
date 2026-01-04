@@ -99,7 +99,7 @@ variable "dns_server" {
 variable "pri_key" {
   type        = string
   description = "Private key path that matches ROOTSSHKEY in http/answers."
-  default     = env("PACKER_SSH_PRIVATE_KEY")
+  default     = env("PACKER_SSH_PRIVATE_KEY_PATH")
 }
 
 variable "answerfile_name" {
