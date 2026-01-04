@@ -81,6 +81,7 @@ variable "iso_storage_pool" {
 variable "wan_bridge" {
   type        = string
   description = "Proxmox bridge for WAN (net0), often differs by system."
+  default = env("PACKER_INTERNET_BRIDGE_CARD")
 }
 
 variable "cloud_init_storage_pool" {
